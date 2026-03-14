@@ -32,7 +32,13 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-print("DEBUG: Importing agents...")
+def _safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        pass
+
+_safe_print("DEBUG: Importing agents...")
 import yaml
 import shutil
 configs_dir = Path(__file__).parent / "configs"
@@ -40,21 +46,21 @@ config_path = configs_dir / "model_config.yaml"
 template_path = configs_dir / "model_config.template.yaml"
 
 if not config_path.exists() and template_path.exists():
-    print(f"DEBUG: {config_path.name} not found. Auto-generating from template")
+    _safe_print(f"DEBUG: {config_path.name} not found. Auto-generating from template")
     shutil.copy2(template_path, config_path)
 try:
     from agents.planner_agent import PlannerAgent
-    print("DEBUG: Imported PlannerAgent")
+    _safe_print("DEBUG: Imported PlannerAgent")
     from agents.visualizer_agent import VisualizerAgent
     from agents.stylist_agent import StylistAgent
     from agents.critic_agent import CriticAgent
     from agents.retriever_agent import RetrieverAgent
     from agents.vanilla_agent import VanillaAgent
     from agents.polish_agent import PolishAgent
-    print("DEBUG: Imported all agents")
+    _safe_print("DEBUG: Imported all agents")
     from utils import config
     from utils.paperviz_processor import PaperVizProcessor
-    print("DEBUG: Imported utils")
+    _safe_print("DEBUG: Imported utils")
 
     model_config_data = {}
     if config_path.exists():
@@ -68,12 +74,12 @@ try:
         return val or default
 
 except ImportError as e:
-    print(f"DEBUG: ImportError: {e}")
+    _safe_print(f"DEBUG: ImportError: {e}")
     import traceback
     traceback.print_exc()
     raise e
 except Exception as e:
-    print(f"DEBUG: Exception during import: {e}")
+    _safe_print(f"DEBUG: Exception during import: {e}")
     import traceback
     traceback.print_exc()
     raise e
@@ -309,7 +315,7 @@ def display_candidate_result(result, candidate_id, exp_mode):
     if final_image_key and final_image_key in result:
         img = base64_to_image(result[final_image_key])
         if img:
-            st.image(img, use_container_width=True, caption=f"Candidate {candidate_id} (Final)")
+            st.image(img, width='stretch', caption=f"Candidate {candidate_id} (Final)")
             
             # Add download button
             buffered = BytesIO()
@@ -320,7 +326,7 @@ def display_candidate_result(result, candidate_id, exp_mode):
                 file_name=f"candidate_{candidate_id}.png",
                 mime="image/png",
                 key=f"download_candidate_{candidate_id}",
-                use_container_width=True
+                width='stretch'
             )
         else:
             st.error(f"Failed to decode image for Candidate {candidate_id}")
@@ -340,7 +346,7 @@ def display_candidate_result(result, candidate_id, exp_mode):
                 # Display the image for this stage
                 stage_img = base64_to_image(result.get(stage['image_key']))
                 if stage_img:
-                    st.image(stage_img, use_container_width=True)
+                    st.image(stage_img, width='stretch')
                 
                 # Show description
                 if stage['desc_key'] in result:
@@ -549,7 +555,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
             )
         
         # Process button
-        if st.button("🚀 Generate Candidates", type="primary", use_container_width=True):
+        if st.button("🚀 Generate Candidates", type="primary", width='stretch'):
             if not method_content or not caption:
                 st.error("Please provide both method content and caption!")
             else:
@@ -631,7 +637,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                             data=json_data,
                             file_name=json_file_path.name,
                             mime="application/json",
-                            use_container_width=True
+                            width='stretch'
                         )
             
             # Display results in a grid (3 columns)
@@ -692,7 +698,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                     data=zip_buffer.getvalue(),
                     file_name=f"papervizagent_candidates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                     mime="application/zip",
-                    use_container_width=True
+                    width='stretch'
                 )
                 st.success("ZIP file ready for download!")
             except Exception as e:
@@ -740,7 +746,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
             
             with col1:
                 st.markdown("### Original Image")
-                st.image(uploaded_image, use_container_width=True)
+                st.image(uploaded_image, width='stretch')
             
             with col2:
                 st.markdown("### Edit Instructions")
@@ -752,7 +758,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                     key="edit_prompt"
                 )
                 
-                if st.button("✨ Refine Image", type="primary", use_container_width=True):
+                if st.button("✨ Refine Image", type="primary", width='stretch'):
                     if not edit_prompt:
                         st.error("Please provide edit instructions!")
                     else:
@@ -795,12 +801,12 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                 
                 with col1:
                     st.markdown("### Before")
-                    st.image(uploaded_image, use_container_width=True)
+                    st.image(uploaded_image, width='stretch')
                 
                 with col2:
                     st.markdown(f"### After ({refine_resolution})")
                     refined_image = Image.open(BytesIO(st.session_state["refined_image"]))
-                    st.image(refined_image, use_container_width=True)
+                    st.image(refined_image, width='stretch')
                     
                     # Download button
                     st.download_button(
@@ -808,7 +814,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                         data=st.session_state["refined_image"],
                         file_name=f"refined_{refine_resolution}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
                         mime="image/png",
-                        use_container_width=True
+                        width='stretch'
                     )
 
 if __name__ == "__main__":
