@@ -17,10 +17,16 @@ Processing pipeline of PaperVizAgent
 """
 
 import asyncio
+import os
+import sys
 from typing import List, Dict, Any, AsyncGenerator
 
 import numpy as np
 from tqdm.asyncio import tqdm
+
+# Redirect tqdm output to /dev/null when running inside Streamlit to avoid
+# BrokenPipeError on the captured stderr pipe.
+_tqdm_file = open(os.devnull, "w") if "streamlit" in sys.modules else sys.stderr
 
 from agents.vanilla_agent import VanillaAgent
 from agents.planner_agent import PlannerAgent
@@ -210,7 +216,7 @@ class PaperVizProcessor:
         all_result_list = []
         eval_dims = ["faithfulness", "conciseness", "readability", "aesthetics", "overall"]
 
-        with tqdm(total=len(tasks), desc="Processing concurrently",ascii=True) as pbar:
+        with tqdm(total=len(tasks), desc="Processing concurrently", ascii=True, file=_tqdm_file) as pbar:
             # Iterate through completed tasks returned by as_completed
             for future in asyncio.as_completed(tasks):
                 result_data = await future

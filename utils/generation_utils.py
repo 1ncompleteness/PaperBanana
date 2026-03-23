@@ -19,6 +19,7 @@ Utility functions for interacting with Gemini and Claude APIs, image processing,
 import json
 import asyncio
 import base64
+import sys
 from io import BytesIO
 from functools import partial
 from ast import literal_eval
@@ -37,6 +38,15 @@ import os
 import yaml
 from pathlib import Path
 
+_builtin_print = print
+
+def _safe_print(*args, **kwargs):
+    """Print that silently catches BrokenPipeError in Streamlit."""
+    try:
+        _builtin_print(*args, **kwargs)
+    except BrokenPipeError:
+        pass
+
 # Load config
 config_path = Path(__file__).parent.parent / "configs" / "model_config.yaml"
 model_config = {}
@@ -54,26 +64,26 @@ def get_config_val(section, key, env_var, default=""):
 api_key = get_config_val("api_keys", "google_api_key", "GOOGLE_API_KEY", "")
 if api_key:
     gemini_client = genai.Client(api_key=api_key)
-    print("Initialized Gemini Client with API Key")
+    _safe_print("Initialized Gemini Client with API Key")
 else:
-    print("Warning: Could not initialize Gemini Client. Missing credentials.")
+    _safe_print("Warning: Could not initialize Gemini Client. Missing credentials.")
     gemini_client = None
 
 
 anthropic_api_key = get_config_val("api_keys", "anthropic_api_key", "ANTHROPIC_API_KEY", "")
 if anthropic_api_key:
     anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
-    print("Initialized Anthropic Client with API Key")
+    _safe_print("Initialized Anthropic Client with API Key")
 else:
-    print("Warning: Could not initialize Anthropic Client. Missing credentials.")
+    _safe_print("Warning: Could not initialize Anthropic Client. Missing credentials.")
     anthropic_client = None
 
 openai_api_key = get_config_val("api_keys", "openai_api_key", "OPENAI_API_KEY", "")
 if openai_api_key:
     openai_client = AsyncOpenAI(api_key=openai_api_key)
-    print("Initialized OpenAI Client with API Key")
+    _safe_print("Initialized OpenAI Client with API Key")
 else:
-    print("Warning: Could not initialize OpenAI Client. Missing credentials.")
+    _safe_print("Warning: Could not initialize OpenAI Client. Missing credentials.")
     openai_client = None
 
 openrouter_api_key = get_config_val("api_keys", "openrouter_api_key", "OPENROUTER_API_KEY", "")
@@ -154,7 +164,7 @@ async def call_gemini_with_retry_async(
             ):
                 raw_response_list = []
                 if not response.candidates or not response.candidates[0].content.parts:
-                    print(
+                    _safe_print(
                         f"[Warning]: Failed to generate image, retrying in {retry_delay} seconds..."
                     )
                     await asyncio.sleep(retry_delay)
@@ -188,14 +198,14 @@ async def call_gemini_with_retry_async(
             # Exponential backoff (capped at 30s)
             current_delay = min(retry_delay * (2 ** attempt), 30)
             
-            print(
+            _safe_print(
                 f"Attempt {attempt + 1} for model {model_name} failed{context_msg}: {e}. Retrying in {current_delay} seconds..."
             )
 
             if attempt < max_attempts - 1:
                 await asyncio.sleep(current_delay)
             else:
-                print(f"Error: All {max_attempts} attempts failed{context_msg}")
+                _safe_print(f"Error: All {max_attempts} attempts failed{context_msg}")
                 result_list = ["Error"] * target_candidate_count
 
     if len(result_list) < target_candidate_count:
@@ -301,7 +311,7 @@ async def call_claude_with_retry_async(
         except Exception as e:
             error_str = str(e).lower()
             context_msg = f" for {error_context}" if error_context else ""
-            print(
+            _safe_print(
                 f"Validation attempt {attempt + 1} failed{context_msg}: {error_str}. Retrying in {retry_delay} seconds..."
             )
             if attempt < max_attempts - 1:
@@ -309,7 +319,7 @@ async def call_claude_with_retry_async(
 
     # --- Sampling Phase ---
     if not is_input_valid:
-        print(
+        _safe_print(
             f"Error: All {max_attempts} attempts failed to validate the input{context_msg}. Returning errors."
         )
         return ["Error"] * candidate_num
@@ -317,7 +327,7 @@ async def call_claude_with_retry_async(
     # We already have 1 successful candidate, now generate the rest.
     remaining_candidates = candidate_num - 1
     if remaining_candidates > 0:
-        print(
+        _safe_print(
             f"Input validated. Now generating remaining {remaining_candidates} candidates..."
         )
         valid_claude_contents = _convert_to_claude_format(current_contents)
@@ -337,7 +347,7 @@ async def call_claude_with_retry_async(
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for res in results:
             if isinstance(res, Exception):
-                print(f"Error generating a subsequent candidate: {res}")
+                _safe_print(f"Error generating a subsequent candidate: {res}")
                 response_text_list.append("Error")
             else:
                 response_text_list.append(res.content[0].text)
@@ -391,7 +401,7 @@ async def call_openai_with_retry_async(
         except Exception as e:
             error_str = str(e).lower()
             context_msg = f" for {error_context}" if error_context else ""
-            print(
+            _safe_print(
                 f"Validation attempt {attempt + 1} failed{context_msg}: {error_str}. Retrying in {retry_delay} seconds..."
             )
             if attempt < max_attempts - 1:
@@ -399,7 +409,7 @@ async def call_openai_with_retry_async(
 
     # --- Sampling Phase ---
     if not is_input_valid:
-        print(
+        _safe_print(
             f"Error: All {max_attempts} attempts failed to validate the input{context_msg}. Returning errors."
         )
         return ["Error"] * candidate_num
@@ -407,7 +417,7 @@ async def call_openai_with_retry_async(
     # We already have 1 successful candidate, now generate the rest.
     remaining_candidates = candidate_num - 1
     if remaining_candidates > 0:
-        print(
+        _safe_print(
             f"Input validated. Now generating remaining {remaining_candidates} candidates..."
         )
         valid_openai_contents = _convert_to_openai_format(current_contents)
@@ -427,7 +437,7 @@ async def call_openai_with_retry_async(
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for res in results:
             if isinstance(res, Exception):
-                print(f"Error generating a subsequent candidate: {res}")
+                _safe_print(f"Error generating a subsequent candidate: {res}")
                 response_text_list.append("Error")
             else:
                 response_text_list.append(res.choices[0].message.content or "Error")
@@ -469,21 +479,21 @@ async def call_openai_image_generation_with_retry_async(
             if response.data and response.data[0].b64_json:
                 return [response.data[0].b64_json]
             else:
-                print(f"[Warning]: Failed to generate image via OpenAI, no data returned.")
+                _safe_print(f"[Warning]: Failed to generate image via OpenAI, no data returned.")
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(retry_delay)
                 continue
 
         except Exception as e:
             context_msg = f" for {error_context}" if error_context else ""
-            print(
+            _safe_print(
                 f"Attempt {attempt + 1} for OpenAI image generation model {model_name} failed{context_msg}: {e}. Retrying in {retry_delay} seconds..."
             )
 
             if attempt < max_attempts - 1:
                 await asyncio.sleep(retry_delay)
             else:
-                print(f"Error: All {max_attempts} attempts failed{context_msg}")
+                _safe_print(f"Error: All {max_attempts} attempts failed{context_msg}")
                 return ["Error"]
 
     return ["Error"]
