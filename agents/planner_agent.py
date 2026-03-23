@@ -31,7 +31,7 @@ class PlannerAgent(BaseAgent):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.model_name = self.exp_config.model_name
+        self.model_name = self.exp_config.main_model_name
 
         # Task-specific configurations
         if "plot" in self.exp_config.task_name:
@@ -67,10 +67,11 @@ class PlannerAgent(BaseAgent):
         examples = data.get("retrieved_examples", [])
         if not examples:
             retrieved_ids = data.get("top10_references", [])
-            with open(self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json", "r", encoding="utf-8") as f:
-                candidate_pool = json.load(f)
-            id_to_item = {item["id"]: item for item in candidate_pool}
-            examples = [id_to_item[ref_id] for ref_id in retrieved_ids if ref_id in id_to_item]
+            if retrieved_ids:
+                with open(self.exp_config.work_dir / f"data/PaperBananaBench/{cfg['task_name']}/ref.json", "r", encoding="utf-8") as f:
+                    candidate_pool = json.load(f)
+                id_to_item = {item["id"]: item for item in candidate_pool}
+                examples = [id_to_item[ref_id] for ref_id in retrieved_ids if ref_id in id_to_item]
         
         user_prompt = ""
         for idx, item in enumerate(examples):
@@ -100,7 +101,7 @@ class PlannerAgent(BaseAgent):
 
         content_list.append({"type": "text", "text": user_prompt})
 
-        response_list = await generation_utils.call_gemini_with_retry_async(
+        response_list = await generation_utils.call_model_with_retry_async(
             model_name=self.model_name,
             contents=content_list,
             config=types.GenerateContentConfig(

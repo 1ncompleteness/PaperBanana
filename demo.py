@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Parallel Streamlit Demo for PaperVizAgent
+Parallel Streamlit Demo for PaperBanana
 Accepts user text input, duplicates it 10 times, and runs parallel processing
 to generate multiple diagram candidates for comparison.
 """
@@ -86,7 +86,7 @@ except Exception as e:
 
 st.set_page_config(
     layout="wide",
-    page_title="PaperVizAgent Parallel Demo",
+    page_title="PaperBanana Parallel Demo",
     page_icon="🍌"
 )
 
@@ -134,7 +134,7 @@ def create_sample_inputs(method_content, caption, diagram_type="Pipeline", aspec
     
     return inputs
 
-async def process_parallel_candidates(data_list, exp_mode="dev_planner_critic", retrieval_setting="auto", model_name=""):
+async def process_parallel_candidates(data_list, exp_mode="dev_planner_critic", retrieval_setting="auto", main_model_name="", image_gen_model_name=""):
     """Process multiple candidates in parallel using PaperVizProcessor."""
     # Create experiment config
     exp_config = config.ExpConfig(
@@ -142,7 +142,8 @@ async def process_parallel_candidates(data_list, exp_mode="dev_planner_critic", 
         split_name="demo",
         exp_mode=exp_mode,
         retrieval_setting=retrieval_setting,
-        model_name=model_name,
+        main_model_name=main_model_name,
+        image_gen_model_name=image_gen_model_name,
         work_dir=Path(__file__).parent,
     )
     
@@ -172,6 +173,7 @@ async def process_parallel_candidates(data_list, exp_mode="dev_planner_critic", 
 async def refine_image_with_nanoviz(image_bytes, edit_prompt, aspect_ratio="21:9", image_size="2K"):
     """
     Refine an image using an Image Editing API.
+    Supports OpenRouter (priority), Google API key, and Vertex AI ADC as fallback.
     
     Args:
         image_bytes: Image data in bytes
@@ -182,27 +184,70 @@ async def refine_image_with_nanoviz(image_bytes, edit_prompt, aspect_ratio="21:9
     Returns:
         Tuple of (edited_image_bytes, success_message)
     """
+    image_model = get_config_val("defaults", "image_gen_model_name", "IMAGE_GEN_MODEL_NAME", "")
+
+    # Encode image as base64 data URL for OpenRouter
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    image_data_url = f"data:image/jpeg;base64,{image_b64}"
+
+    # --- Path 1: OpenRouter (preferred, matches main pipeline priority) ---
+    try:
+        from utils.generation_utils import call_openrouter_image_generation_with_retry_async
+        _has_openrouter = True
+    except ImportError:
+        _has_openrouter = False
+    openrouter_api_key = get_config_val("api_keys", "openrouter_api_key", "OPENROUTER_API_KEY", "")
+    if _has_openrouter and openrouter_api_key:
+        try:
+            contents = [
+                {"type": "image", "data": image_b64, "mime_type": "image/jpeg"},
+                {"type": "text", "text": edit_prompt},
+            ]
+            config = {
+                "system_prompt": "",
+                "temperature": 1.0,
+                "aspect_ratio": aspect_ratio,
+                "image_size": image_size,
+            }
+            result = await call_openrouter_image_generation_with_retry_async(
+                model_name=image_model,
+                contents=contents,
+                config=config,
+                max_attempts=3,
+                retry_delay=10,
+                error_context="refine_image",
+            )
+            if result and result[0] != "Error":
+                return base64.b64decode(result[0]), "✅ Image refined successfully! (via OpenRouter)"
+        except Exception as e:
+            print(f"OpenRouter refine failed: {e}, falling back to Google API key...")
+
+    # --- Path 2 & 3: Gemini native SDK (Google API key or Vertex AI ADC) ---
     try:
         from google import genai
         from google.genai import types
-        
-        # Initialize client
-        project_id = get_config_val("google_cloud", "project_id", "GOOGLE_CLOUD_PROJECT", "")
+    except ImportError:
+        return None, "❌ Error: google-genai SDK not installed and OpenRouter unavailable."
+
+    google_api_key = get_config_val("api_keys", "google_api_key", "GOOGLE_API_KEY", "")
+    project_id = get_config_val("google_cloud", "project_id", "GOOGLE_CLOUD_PROJECT", "")
+
+    if google_api_key:
+        client = genai.Client(api_key=google_api_key)
+        via = "Google API key"
+    elif project_id:
         location = get_config_val("google_cloud", "location", "GOOGLE_CLOUD_LOCATION", "global")
-        
         client = genai.Client(vertexai=True, project=project_id, location=location)
-        
-        # Prepare content
+        via = "Vertex AI"
+    else:
+        return None, "❌ Error: No API credentials configured. Set OPENROUTER_API_KEY, GOOGLE_API_KEY, or configure Vertex AI project in configs/model_config.yaml."
+
+    try:
         contents = [
             types.Part.from_text(text=edit_prompt),
-            types.Part.from_bytes(
-                mime_type="image/jpeg",
-                data=image_bytes
-            )
+            types.Part.from_bytes(mime_type="image/jpeg", data=image_bytes),
         ]
-        
-        # Configure generation
-        config = types.GenerateContentConfig(
+        gen_config = types.GenerateContentConfig(
             temperature=1.0,
             max_output_tokens=8192,
             response_modalities=["IMAGE"],
@@ -211,31 +256,23 @@ async def refine_image_with_nanoviz(image_bytes, edit_prompt, aspect_ratio="21:9
                 image_size=image_size,
             ),
         )
-        
-        # Generate refined image
-        image_model = get_config_val("defaults", "image_model_name", "IMAGE_MODEL_NAME", "")
         response = await asyncio.to_thread(
             client.models.generate_content,
             model=image_model,
             contents=contents,
-            config=config
+            config=gen_config,
         )
-        
-        # Extract image from response
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
-                if hasattr(part, 'inline_data') and part.inline_data:
+                if hasattr(part, "inline_data") and part.inline_data:
                     edited_image_data = part.inline_data.data
-                    
                     if isinstance(edited_image_data, bytes):
-                        return edited_image_data, "✅ Image refined successfully!"
+                        return edited_image_data, f"✅ Image refined successfully! (via {via})"
                     elif isinstance(edited_image_data, str):
-                        return base64.b64decode(edited_image_data), "✅ Image refined successfully!"
-        
-        return None, "❌ No image data found in response"
-    
+                        return base64.b64decode(edited_image_data), f"✅ Image refined successfully! (via {via})"
+        return None, f"❌ No image data found in {via} response"
     except Exception as e:
-        return None, f"❌ Error: {str(e)}"
+        return None, f"❌ {via} error: {str(e)}"
 
 
 def get_evolution_stages(result, exp_mode):
@@ -378,7 +415,7 @@ def display_candidate_result(result, candidate_id, exp_mode):
                 st.info("No description available")
 
 def main():
-    st.title("🍌 PaperVizAgent Demo")
+    st.title("🍌 PaperBanana Demo")
     st.markdown("AI-powered scientific diagram generation and refinement")
     
     # Create tabs
@@ -394,7 +431,7 @@ def main():
             
             exp_mode = st.selectbox(
                 "Pipeline Mode",
-                ["demo_planner_critic", "demo_full"],
+                ["demo_full", "demo_planner_critic"],
                 index=0,
                 key="tab1_exp_mode",
                 help="Select which agent pipeline to use"
@@ -439,16 +476,53 @@ def main():
                 help="Maximum number of critic refinement iterations"
             )
             
-            default_model = get_config_val("defaults", "model_name", "MODEL_NAME", "YOUR_MODEL_NAME_HERE")
-            options = ["", default_model] if default_model else ["", "YOUR_MODEL_NAME_HERE"]
-            
-            model_name = st.selectbox(
-                "Model Name",
-                options,
+            default_model = get_config_val("defaults", "main_model_name", "MAIN_MODEL_NAME", "gemini-3.1-pro-preview")
+            text_model_presets = [default_model] if default_model else ["gemini-3.1-pro-preview"]
+            if "gemini-3-flash-preview" not in text_model_presets:
+                text_model_presets.append("gemini-3-flash-preview")
+            if "gemini-3.1-pro-preview" not in text_model_presets:
+                text_model_presets.insert(0, "gemini-3.1-pro-preview")
+            text_model_presets.append("Custom")
+            text_model_selection = st.selectbox(
+                "Main Model Name",
+                text_model_presets,
                 index=0,
                 key="tab1_model_name",
-                help="Model name to use for reasoning"
+                help="Vision-language model for understanding and describing diagrams"
             )
+            if text_model_selection == "Custom":
+                main_model_name = st.text_input(
+                    "Custom Main Model",
+                    value="",
+                    key="tab1_main_model_name_custom",
+                    placeholder="e.g., openrouter/google/gemini-3.1-pro"
+                )
+            else:
+                main_model_name = text_model_selection
+
+            default_image_model = get_config_val("defaults", "image_gen_model_name", "IMAGE_GEN_MODEL_NAME", "gemini-3.1-flash-image-preview")
+            image_model_presets = [default_image_model] if default_image_model else ["gemini-3.1-flash-image-preview"]
+            if "gemini-3-pro-image-preview" not in image_model_presets:
+                image_model_presets.append("gemini-3-pro-image-preview")
+            if "gemini-3.1-flash-image-preview" not in image_model_presets:
+                image_model_presets.insert(0, "gemini-3.1-flash-image-preview")
+            image_model_presets.append("Custom")
+            image_model_selection = st.selectbox(
+                "Image Generation Model Name",
+                image_model_presets,
+                index=0,
+                key="tab1_image_model_name",
+                help="Model for generating diagram images"
+            )
+            if image_model_selection == "Custom":
+                image_gen_model_name = st.text_input(
+                    "Custom Image Generation Model",
+                    value="",
+                    key="tab1_image_gen_model_name_custom",
+                    placeholder="e.g., openrouter/openai/gpt-image-1"
+                )
+            else:
+                image_gen_model_name = image_model_selection
         
         st.divider()
         
@@ -456,9 +530,9 @@ def main():
         st.markdown("## 📝 Input")
         
         # Example content
-        example_method = r"""## Methodology: The PaperVizAgent Framework
+        example_method = r"""## Methodology: The PaperBanana Framework
         
-        In this section, we present the architecture of PaperVizAgent, a reference-driven agentic framework for automated academic illustration. As illustrated in Figure \ref{fig:methodology_diagram}, PaperVizAgent orchestrates a collaborative team of five specialized agents—Retriever, Planner, Stylist, Visualizer, and Critic—to transform raw scientific content into publication-quality diagrams and plots. (See Appendix \ref{app_sec:agent_prompts} for prompts)
+        In this section, we present the architecture of PaperBanana, a reference-driven agentic framework for automated academic illustration. As illustrated in Figure \ref{fig:methodology_diagram}, PaperBanana orchestrates a collaborative team of five specialized agents—Retriever, Planner, Stylist, Visualizer, and Critic—to transform raw scientific content into publication-quality diagrams and plots. (See Appendix \ref{app_sec:agent_prompts} for prompts)
 
 ### Retriever Agent
 
@@ -506,7 +580,7 @@ This revised description is then fed back to the Visualizer for regeneration. Th
 
 The framework extends to statistical plots by adjusting the Visualizer and Critic agents. For numerical precision, the Visualizer converts the description $P_t$ into executable Python Matplotlib code: $I_t = \text{VLM}_{\text{code}}(P_t)$. The Critic evaluates the rendered plot and generates a refined description $P_{t+1}$ addressing inaccuracies or imperfections: $P_{t+1} = \text{VLM}_{\text{critic}}(I_t, S, C, P_t)$. The same $T=3$ round iterative refinement process applies. While we prioritize this code-based approach for accuracy, we also explore direct image generation in Section \ref{sec:discussion}. See Appendix \ref{app_sec:plot_agent_prompt} for adjusted prompts."""
 
-        example_caption = "Figure 1: Overview of our PaperVizAgent framework. Given the source context and communicative intent, we first apply a Linear Planning Phase to retrieve relevant reference examples and synthesize a stylistically optimized description. We then use an Iterative Refinement Loop (consisting of Visualizer and Critic agents) to transform the description into visual output and conduct multi-round refinements to produce the final academic illustration."
+        example_caption = "Figure 1: Overview of our PaperBanana framework. Given the source context and communicative intent, we first apply a Linear Planning Phase to retrieve relevant reference examples and synthesize a stylistically optimized description. We then use an Iterative Refinement Loop (consisting of Visualizer and Critic agents) to transform the description into visual output and conduct multi-round refinements to produce the final academic illustration."
         
         col_input1, col_input2 = st.columns([3, 2])
         
@@ -514,12 +588,12 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
             # Example selector for method content
             method_example = st.selectbox(
                 "Load Example (Method)",
-                ["None", "PaperVizAgent Framework"],
+                ["None", "PaperBanana Framework"],
                 key="method_example_selector"
             )
             
             # Set value based on example selection or session state
-            if method_example == "PaperVizAgent Framework":
+            if method_example == "PaperBanana Framework":
                 method_value = example_method
             else:
                 method_value = st.session_state.get("method_content", "")
@@ -536,12 +610,12 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
             # Example selector for caption
             caption_example = st.selectbox(
                 "Load Example (Caption)",
-                ["None", "PaperVizAgent Framework"],
+                ["None", "PaperBanana Framework"],
                 key="caption_example_selector"
             )
             
             # Set value based on example selection or session state
-            if caption_example == "PaperVizAgent Framework":
+            if caption_example == "PaperBanana Framework":
                 caption_value = example_caption
             else:
                 caption_value = st.session_state.get("caption", "")
@@ -576,10 +650,11 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                     # Process in parallel
                     try:
                         results = asyncio.run(process_parallel_candidates(
-                            input_data_list, 
-                            exp_mode=exp_mode, 
+                            input_data_list,
+                            exp_mode=exp_mode,
                             retrieval_setting=retrieval_setting,
-                            model_name=model_name
+                            main_model_name=main_model_name,
+                            image_gen_model_name=image_gen_model_name
                         ))
                         st.session_state["results"] = results
                         st.session_state["exp_mode"] = exp_mode
@@ -696,7 +771,7 @@ The framework extends to statistical plots by adjusting the Visualizer and Criti
                 st.download_button(
                     label="⬇️ Download ZIP",
                     data=zip_buffer.getvalue(),
-                    file_name=f"papervizagent_candidates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                    file_name=f"paperbanana_candidates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
                     mime="application/zip",
                     width='stretch'
                 )
