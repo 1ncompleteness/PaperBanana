@@ -205,6 +205,15 @@
       "contributions": [
         "bug"
       ]
+    },
+    {
+      "login": "Konjac-XZ",
+      "name": "Konjac-XZ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/71483384?v=4",
+      "profile": "https://github.com/Konjac-XZ",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "commitType": "docs"
